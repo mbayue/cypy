@@ -17,7 +17,7 @@ else:
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL_GEMINI = "gemini-3.1-flash-lite-preview"
+MODEL_GEMINI = os.getenv("MODEL_GEMINI", "gemini-3.1-flash-lite-preview")
 
 # ✦ Assets Path - YOLO model and font files go here~ ✦
 MODEL_YOLO = os.path.join(ASSETS_DIR, "eyecyre.pt")

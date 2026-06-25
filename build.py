@@ -30,12 +30,13 @@ def run_build():
     assets_dir = os.path.join(project_root, "assets")
     
     # Build command for console application (no --windowed/--noconsole because cypy is a CLI app)
+    # Using --onedir as requested for lightweight, SSD-friendly, instant startup.
     cmd = [
         "pyinstaller",
         "--clean",
         "--noconfirm",
         "--name=cypy",
-        "--onefile",
+        "--onedir",
         f"--add-data={assets_dir}{sep}assets",
     ]
     
@@ -43,6 +44,8 @@ def run_build():
     icon_path = os.path.join(assets_dir, "favicon.ico")
     if os.path.exists(icon_path):
         cmd.append(f"--icon={icon_path}")
+    else:
+        print("[Build] Warning: favicon.ico not found, compiling without custom icon.")
     
     # Entry point
     entry_point = os.path.join(project_root, "cypy", "app.py")
@@ -88,34 +91,99 @@ def package_release(project_root):
     
     print(f"[Build] Packaging application for {os_name} ({arch})...")
     
-    # Target executable name
-    exec_name = "cypy.exe" if os_system == "windows" else "cypy"
-    exec_path = os.path.join(dist_dir, exec_name)
+    # In --onedir mode, we create a temporary directory named 'cypy_pkg_temp' inside 'dist' to bundle everything.
+    # This avoids any naming conflicts with the compiled output directory.
+    app_folder_path = os.path.join(dist_dir, "cypy_pkg_temp")
+    if os.path.exists(app_folder_path):
+        try:
+            shutil.rmtree(app_folder_path)
+        except Exception:
+            pass
+    os.makedirs(app_folder_path, exist_ok=True)
     
-    if not os.path.exists(exec_path):
-        print(f"[Build] Error: Compiled executable not found at: {exec_path}")
-        sys.exit(1)
+    # 1. Copy the compiled output into our temporary release folder
+    if os_name == "macos":
+        app_bundle = os.path.join(dist_dir, "cypy.app")
+        if os.path.exists(app_bundle):
+            shutil.copytree(app_bundle, os.path.join(app_folder_path, "cypy.app"))
+            print("[Build] Copied cypy.app bundle into release folder.")
+        else:
+            # Fallback to binary directory if no bundle exists
+            src_dir = os.path.join(dist_dir, "cypy")
+            if os.path.exists(src_dir):
+                shutil.copytree(src_dir, os.path.join(app_folder_path, "cypy"))
+                print("[Build] Copied cypy binary directory into release folder.")
+            else:
+                print("[Build] Error: Compiled output not found.")
+                sys.exit(1)
+    else:
+        # For Windows/Linux, copy all contents from dist/cypy/ into dist/cypy_pkg_temp/
+        src_dir = os.path.join(dist_dir, "cypy")
+        if os.path.exists(src_dir):
+            for item in os.listdir(src_dir):
+                s = os.path.join(src_dir, item)
+                d = os.path.join(app_folder_path, item)
+                if os.path.isdir(s):
+                    shutil.copytree(s, d)
+                else:
+                    shutil.copy2(s, d)
+            print("[Build] Copied all compiled files and folders into release folder.")
+        else:
+            print(f"[Build] Error: Compiled directory not found at: {src_dir}")
+            sys.exit(1)
             
-    # Zip the executable and config files
+    # 2. Copy README.md into the release folder before zipping
+    readme_path = os.path.join(project_root, "README.md")
+    if os.path.exists(readme_path):
+        try:
+            shutil.copy(readme_path, os.path.join(app_folder_path, "README.md"))
+            print("[Build] Copied README.md into release folder.")
+        except Exception as e:
+            print(f"[Build] Warning: Failed to copy README.md: {e}")
+            
+    # 3. Copy LICENSE into the release folder before zipping
+    license_path = os.path.join(project_root, "LICENSE")
+    if os.path.exists(license_path):
+        try:
+            shutil.copy(license_path, os.path.join(app_folder_path, "LICENSE"))
+            print("[Build] Copied LICENSE into release folder.")
+        except Exception as e:
+            print(f"[Build] Warning: Failed to copy LICENSE: {e}")
+            
+    # 4. Copy .env.example into the release folder before zipping
+    env_ex_path = os.path.join(project_root, ".env.example")
+    if os.path.exists(env_ex_path):
+        try:
+            shutil.copy(env_ex_path, os.path.join(app_folder_path, ".env.example"))
+            print("[Build] Copied .env.example into release folder.")
+        except Exception as e:
+            print(f"[Build] Warning: Failed to copy .env.example: {e}")
+            
+    # 5. Zip the entire folder
     try:
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(exec_path, exec_name)
-            
-            # Add README if it exists
-            readme_path = os.path.join(project_root, "README.md")
-            if os.path.exists(readme_path):
-                zipf.write(readme_path, "README.md")
-                
-            # Add .env.example if it exists
-            env_ex_path = os.path.join(project_root, ".env.example")
-            if os.path.exists(env_ex_path):
-                zipf.write(env_ex_path, ".env.example")
-                
+        print(f"[Build] Zipping folder: {app_folder_path} to {zip_path}...")
+        zip_directory(app_folder_path, zip_path)
         print(f"[Build] Packaged successfully to: {zip_path}")
         print(f"[Build] Package size: {os.path.getsize(zip_path) / (1024*1024):.2f} MB")
     except Exception as e:
         print(f"[Build] Packaging failed: {e}")
         sys.exit(1)
+    finally:
+        # 6. Clean up our temporary release folder
+        if os.path.exists(app_folder_path):
+            try:
+                shutil.rmtree(app_folder_path)
+            except Exception as e:
+                print(f"[Build] Warning: Failed to clean up temporary release folder: {e}")
+
+def zip_directory(folder_path, zip_path):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                # Maintain relative path inside zip, prefixing with 'cypy/'
+                rel_path = os.path.relpath(file_path, folder_path)
+                zipf.write(file_path, os.path.join("cypy", rel_path))
 
 if __name__ == "__main__":
     run_build()
