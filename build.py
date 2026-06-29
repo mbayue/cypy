@@ -39,8 +39,6 @@ def run_build():
         "--onedir",
         f"--add-data={assets_dir}{sep}assets",
         "--exclude-module=polars",
-        "--exclude-module=scipy",
-        "--exclude-module=matplotlib",
         "--exclude-module=lxml",
         "--exclude-module=tkinter",
         "--exclude-module=sqlite3",
