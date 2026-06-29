@@ -1,18 +1,270 @@
 import cv2
 import os
+import sys
+import zipfile
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 try:
-    from google.genai import types
-except Exception:
-    types = None
+    import requests as _requests
+except ImportError:
+    _requests = None
 
 from cypy.core.config import (
     FONT_MANGA, OVERLAP_BATAS_CROP, MASK_AREA_LUAR_BOX, MASK_MARGIN,
     FILTER_SFX_AKTIF, FILTER_SFX_MODE, SIMPAN_DEBUG_FILTER_SFX,
-    ROOT_DIR, MODEL_GEMINI
+    ROOT_DIR, ASSETS_DIR
 )
+
+# ==========================================
+# ✦ FONT MANAGEMENT - Smart font selection & auto-download~ ♪ ✦
+# ==========================================
+
+# Path to the bundled Japanese font
+FONT_JAPANESE = os.path.join(ASSETS_DIR, "KosugiMaru.ttf")
+
+# Directory to cache downloaded fonts
+FONT_CACHE_DIR = os.path.join(ROOT_DIR, "cypy_cache", "fonts")
+
+# The currently active target language (set by app.py before translation)
+_active_target_language = None
+
+# Font cache to avoid repeated lookups
+_font_path_cache = {}
+
+# Language → Google Fonts family name mapping for Noto Sans variants
+_NOTO_SANS_MAP = {
+    "korean": "Noto+Sans+KR",
+    "chinese": "Noto+Sans+SC",
+    "chinese (simplified)": "Noto+Sans+SC",
+    "chinese (traditional)": "Noto+Sans+TC",
+    "thai": "Noto+Sans+Thai",
+    "arabic": "Noto+Sans+Arabic",
+    "hindi": "Noto+Sans+Devanagari",
+    "bengali": "Noto+Sans+Bengali",
+    "tamil": "Noto+Sans+Tamil",
+    "telugu": "Noto+Sans+Telugu",
+    "russian": "Noto+Sans",
+    "ukrainian": "Noto+Sans",
+    "greek": "Noto+Sans",
+    "hebrew": "Noto+Sans+Hebrew",
+    "georgian": "Noto+Sans+Georgian",
+    "armenian": "Noto+Sans+Armenian",
+    "burmese": "Noto+Sans+Myanmar",
+    "khmer": "Noto+Sans+Khmer",
+    "lao": "Noto+Sans+Lao",
+    "tibetan": "Noto+Sans+Tibetan",
+    "mongolian": "Noto+Sans+Mongolian",
+    "vietnamese": "Noto+Sans",
+    "malay": "Noto+Sans",
+    "turkish": "Noto+Sans",
+    "persian": "Noto+Sans+Arabic",
+    "urdu": "Noto+Sans+Arabic",
+}
+
+
+def set_active_language(language):
+    """Set the current target language (called from app.py/translator)."""
+    global _active_target_language
+    _active_target_language = language.lower() if language else None
+
+
+def _has_non_latin(text):
+    """Check if text contains characters outside the basic Latin + Latin Extended range."""
+    for ch in text:
+        cp = ord(ch)
+        # Allow ASCII + Latin Extended-A/B + Latin Supplement + common punctuation
+        if cp > 0x024F and ch not in ' \t\n\r.,!?;:\'"\\-()[]{}…—–·•«»¡¿♪~':
+            return True
+    return False
+
+_DIRECT_FONT_MAP = {
+    "korean": ("https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/Korean/NotoSansCJKkr-Regular.otf", ".otf"),
+    "chinese (simplified)": ("https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf", ".otf"),
+    "chinese": ("https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf", ".otf"),
+    "china": ("https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf", ".otf"),
+    "chinese (traditional)": ("https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf", ".otf"),
+    "thai": ("https://github.com/google/fonts/raw/main/ofl/notosansthai/NotoSansThai%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "thailand": ("https://github.com/google/fonts/raw/main/ofl/notosansthai/NotoSansThai%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "arabic": ("https://github.com/google/fonts/raw/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "urdu": ("https://github.com/google/fonts/raw/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "pakistan": ("https://github.com/google/fonts/raw/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "russian": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "russia": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "vietnamese": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "vietnam": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "bengali": ("https://github.com/google/fonts/raw/main/ofl/notosansbengali/NotoSansBengali%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "bangladesh": ("https://github.com/google/fonts/raw/main/ofl/notosansbengali/NotoSansBengali%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "hindi": ("https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "india": ("https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "hebrew": ("https://github.com/google/fonts/raw/main/ofl/notosanshebrew/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "tamil": ("https://github.com/google/fonts/raw/main/ofl/notosanstamil/NotoSansTamil%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "myanmar": ("https://github.com/google/fonts/raw/main/ofl/notosansmyanmar/NotoSansMyanmar%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "burmese": ("https://github.com/google/fonts/raw/main/ofl/notosansmyanmar/NotoSansMyanmar%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    
+    "mongolia": ("https://github.com/google/fonts/raw/main/ofl/notosansmongolian/NotoSansMongolian-Regular.ttf", ".ttf"),
+    "mongolian": ("https://github.com/google/fonts/raw/main/ofl/notosansmongolian/NotoSansMongolian-Regular.ttf", ".ttf"),
+    "kamboja": ("https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "khmer": ("https://github.com/google/fonts/raw/main/ofl/notosanskhmer/NotoSansKhmer%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "laos": ("https://github.com/google/fonts/raw/main/ofl/notosanslao/NotoSansLao%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "lao": ("https://github.com/google/fonts/raw/main/ofl/notosanslao/NotoSansLao%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "telugu": ("https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kannada": ("https://github.com/google/fonts/raw/main/ofl/notosanskannada/NotoSansKannada%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "malayalam": ("https://github.com/google/fonts/raw/main/ofl/notosansmalayalam/NotoSansMalayalam%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "gujarati": ("https://github.com/google/fonts/raw/main/ofl/notosansgujarati/NotoSansGujarati%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "punjabi": ("https://github.com/google/fonts/raw/main/ofl/notosansgurmukhi/NotoSansGurmukhi%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "gurmukhi": ("https://github.com/google/fonts/raw/main/ofl/notosansgurmukhi/NotoSansGurmukhi%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "georgia": ("https://github.com/google/fonts/raw/main/ofl/notosansgeorgian/NotoSansGeorgian%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "georgian": ("https://github.com/google/fonts/raw/main/ofl/notosansgeorgian/NotoSansGeorgian%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "armenia": ("https://github.com/google/fonts/raw/main/ofl/notosansarmenian/NotoSansArmenian%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "armenian": ("https://github.com/google/fonts/raw/main/ofl/notosansarmenian/NotoSansArmenian%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kazakhstan": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kazakh": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "uzbekistan": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "uzbek": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kirgizstan": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kyrgyz": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "kyrgyzstan": ("https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "ethiopia": ("https://github.com/google/fonts/raw/main/ofl/notosansethiopic/NotoSansEthiopic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "amharic": ("https://github.com/google/fonts/raw/main/ofl/notosansethiopic/NotoSansEthiopic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "eritrea": ("https://github.com/google/fonts/raw/main/ofl/notosansethiopic/NotoSansEthiopic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "tigrinya": ("https://github.com/google/fonts/raw/main/ofl/notosansethiopic/NotoSansEthiopic%5Bwdth%2Cwght%5D.ttf", ".ttf"),
+    "tigre": ("https://github.com/google/fonts/raw/main/ofl/notosansethiopic/NotoSansEthiopic%5Bwdth%2Cwght%5D.ttf", ".ttf")
+}
+
+def _download_noto_font(language):
+    """
+    Downloads Noto Sans font. For mapped languages, uses direct github links for full unsubsetted fonts.
+    For everything else, tries CSS API as fallback.
+    """
+    if not os.path.exists(FONT_CACHE_DIR):
+        os.makedirs(FONT_CACHE_DIR)
+
+    lang_key = language.lower()
+
+    if lang_key in _DIRECT_FONT_MAP:
+        url, ext = _DIRECT_FONT_MAP[lang_key]
+        safe_name = f"NotoSans_{lang_key.replace(' ', '')}_v3"
+        cached_file = os.path.join(FONT_CACHE_DIR, f"{safe_name}{ext}")
+        
+        if os.path.exists(cached_file):
+            return cached_file
+            
+        print(f"  [Font] Downloading full font {safe_name}{ext}...")
+        
+        try:
+            response = _requests.get(url, stream=True, timeout=30, allow_redirects=True)
+            if response.status_code == 200:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded_size = 0
+                
+                with open(cached_file, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            if total_size > 0:
+                                percent = int(downloaded_size * 100 / total_size)
+                                sys.stdout.write(f"\r  [Font] Downloading... {percent}% ({downloaded_size//1024}KB / {total_size//1024}KB)")
+                                sys.stdout.flush()
+                print() # newline
+                return cached_file
+            else:
+                print(f"  [!] Font download failed with status: {response.status_code}")
+        except Exception as e:
+            print(f"  [!] Font download error: {e}")
+            
+        return None
+
+    # Fallback to Google Fonts CSS API for other unmapped languages
+    import re
+    font_family = _NOTO_SANS_MAP.get(lang_key)
+    if not font_family:
+        for key, family in _NOTO_SANS_MAP.items():
+            if key in lang_key or lang_key in key:
+                font_family = family
+                break
+
+    if not font_family:
+        font_family = "Noto+Sans"
+
+    safe_name = font_family.replace("+", "").replace(" ", "")
+    cached_ttf = os.path.join(FONT_CACHE_DIR, f"{safe_name}.ttf")
+
+    if os.path.exists(cached_ttf):
+        return cached_ttf
+
+    print(f"  [Font] Fetching {font_family.replace('+', ' ')} from Google Fonts...")
+    css_url = f"https://fonts.googleapis.com/css?family={font_family}"
+    headers = {'User-Agent': 'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)'}
+    
+    try:
+        css_resp = _requests.get(css_url, headers=headers, timeout=15)
+        if css_resp.status_code == 200:
+            match = re.search(r"url\((https://[^)]+)\)", css_resp.text)
+            if match:
+                ttf_url = match.group(1).strip("'\"")
+                ttf_resp = _requests.get(ttf_url, stream=True, timeout=30)
+                if ttf_resp.status_code == 200:
+                    with open(cached_ttf, "wb") as f:
+                        for chunk in ttf_resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    print(f"  [Font] Downloaded successfully: {os.path.basename(cached_ttf)}")
+                    return cached_ttf
+    except Exception as e:
+        print(f"  [!] Font download error: {e}")
+        
+    return None
+
+
+def _get_font_for_text(text, size, language=None):
+    """
+    Returns the appropriate font for the given text and target language.
+    Priority: KosugiMaru (Japanese) → Downloaded Noto Sans (custom) → FONT_MANGA (Latin)~ ♪
+    """
+    if _has_non_latin(text):
+        lang = language.lower() if language else ""
+        if lang == "jepang":
+            lang = "japanese"
+
+        # Japanese uses bundled KosugiMaru.ttf
+        if lang == "japanese" and os.path.exists(FONT_JAPANESE):
+            try:
+                return ImageFont.truetype(FONT_JAPANESE, size)
+            except Exception:
+                pass
+
+        # Check cache first
+        cache_key = f"lang_{lang}"
+        if cache_key in _font_path_cache:
+            cached = _font_path_cache[cache_key]
+            if cached:
+                try:
+                    return ImageFont.truetype(cached, size)
+                except Exception:
+                    pass
+
+        # Try downloading Noto Sans for this language
+        if lang:
+            noto_path = _download_noto_font(lang)
+            _font_path_cache[cache_key] = noto_path
+            if noto_path:
+                try:
+                    return ImageFont.truetype(noto_path, size)
+                except Exception:
+                    pass
+
+        # Last resort: try KosugiMaru (covers CJK well)
+        if os.path.exists(FONT_JAPANESE):
+            try:
+                return ImageFont.truetype(FONT_JAPANESE, size)
+            except Exception:
+                pass
+
+    try:
+        return ImageFont.truetype(FONT_MANGA, size)
+    except Exception:
+        return ImageFont.load_default()
 
 
 def bersihkan_json_dari_gemini(teks_mentah):
@@ -37,66 +289,6 @@ def bersihkan_json_dari_gemini(teks_mentah):
     return teks.strip()
 
 
-def panggil_gemini_dengan_config(client, gambar_mosaik_pil, prompt):
-    """
-    Calls Gemini with low temperature to keep it accurate~ 
-    Falls back if library version doesn't support configs ♪
-    """
-    def check_and_raise_api_error(err):
-        err_str = str(err).lower()
-        if "api key expired" in err_str or "api_key_invalid" in err_str or "api key" in err_str or "api_key" in err_str:
-            raise ValueError("API_KEY_ERROR")
-
-    if types is not None:
-        try:
-            return client.models.generate_content(
-                model=MODEL_GEMINI,
-                contents=[gambar_mosaik_pil, prompt],
-                config=types.GenerateContentConfig(
-                    temperature=0,
-                    top_p=0.1,
-                    top_k=1,
-                    response_mime_type="application/json"
-                )
-            )
-        except Exception as e:
-            check_and_raise_api_error(e)
-
-            try:
-                return client.models.generate_content(
-                    model=MODEL_GEMINI,
-                    contents=[gambar_mosaik_pil, prompt],
-                    config=types.GenerateContentConfig(
-                        temperature=0,
-                        top_p=0.1,
-                        top_k=1
-                    )
-                )
-            except Exception as e2:
-                check_and_raise_api_error(e2)
-
-    try:
-        return client.models.generate_content(
-            model=MODEL_GEMINI,
-            contents=[gambar_mosaik_pil, prompt],
-            config={
-                "temperature": 0,
-                "top_p": 0.1,
-                "top_k": 1,
-                "response_mime_type": "application/json"
-            }
-        )
-    except Exception as e:
-        check_and_raise_api_error(e)
-
-        try:
-            return client.models.generate_content(
-                model=MODEL_GEMINI,
-                contents=[gambar_mosaik_pil, prompt]
-            )
-        except Exception as final_err:
-            check_and_raise_api_error(final_err)
-            raise final_err
 
 
 def pecah_kata_hyphen_jika_panjang(draw, word, font, max_w):
@@ -134,8 +326,16 @@ def bungkus_teks_per_kata(draw, text, font, max_w):
     """
     Wraps text based on word widths. 
     Hyphenated words may be split at hyphens to allow larger font sizes~ ♪
+    Supports languages without spaces (like Chinese) by splitting by character.
     """
-    raw_words = str(text).split()
+    text = str(text)
+    
+    # If text has no spaces and contains non-latin chars (like Chinese), 
+    # treat each character as a word for wrapping purposes.
+    if " " not in text and _has_non_latin(text):
+        raw_words = list(text)
+    else:
+        raw_words = text.split()
 
     if not raw_words:
         return ""
@@ -148,7 +348,12 @@ def bungkus_teks_per_kata(draw, text, font, max_w):
     current = ""
 
     for word in words:
-        candidate = word if current == "" else current + " " + word
+        # If splitting by character, don't add spaces between "words"
+        if " " not in text and _has_non_latin(text):
+            candidate = word if current == "" else current + word
+        else:
+            candidate = word if current == "" else current + " " + word
+            
         bbox = draw.textbbox((0, 0), candidate, font=font)
         candidate_w = bbox[2] - bbox[0]
 
@@ -224,17 +429,126 @@ def pilih_setting_teks(box_width, box_height, text):
     }
 
 
-def tulis_teks_di_balon(draw, text, x1, y1, x2, y2, background_patch=False):
+def tulis_teks_jepang_vertikal(draw, text, font_func, x1, y1, x2, y2, setting, background_patch=False):
     """
-    Auto-fits Indonesian text into speech bubbles. 
-    Wraps words neatly, allows hyphen splits, and maximizes font size~ ♪
+    Draws Japanese text vertically (Top-to-Bottom, Right-to-Left).
     """
-    text = str(text).upper().strip()
+    text = text.replace(" ", "").replace("\n", "")
+    box_width = max(1, x2 - x1)
+    box_height = max(1, y2 - y1)
+    
+    max_w = box_width * setting["skala_w"]
+    max_h = box_height * setting["skala_h"]
+    
+    min_font_size = setting["min_font"]
+    max_font_size = setting["max_font"]
+    
+    best_font_size = min_font_size
+    best_columns = []
+    
+    for f_size in range(max_font_size, min_font_size - 1, -1):
+        char_h = f_size
+        char_w = f_size
+        chars_per_col = max(1, int(max_h // char_h))
+        
+        columns = [text[i:i+chars_per_col] for i in range(0, len(text), chars_per_col)]
+        total_w = len(columns) * char_w
+        
+        if total_w <= max_w:
+            best_font_size = f_size
+            best_columns = columns
+            break
+
+    # If it still doesn't fit, just use the minimum font size
+    if not best_columns:
+        chars_per_col = max(1, int(max_h // min_font_size))
+        best_columns = [text[i:i+chars_per_col] for i in range(0, len(text), chars_per_col)]
+            
+    best_font_size = max(min_font_size, int(best_font_size * setting["font_scale"]))
+    font = font_func(text, best_font_size, "japanese")
+    
+    actual_w = len(best_columns) * best_font_size
+    actual_h = max(len(col) for col in best_columns) * best_font_size if best_columns else 0
+    
+    # Start at right-most column
+    start_x = x1 + (box_width + actual_w) / 2 - best_font_size
+    start_y = y1 + (box_height - actual_h) / 2
+    
+    stroke_w = max(1, best_font_size // 11)
+    
+    if background_patch:
+        pad = max(6, best_font_size // 2)
+        patch_box = [
+            int(start_x - actual_w + best_font_size - pad),
+            int(start_y - pad),
+            int(start_x + best_font_size + pad),
+            int(start_y + actual_h + pad)
+        ]
+        draw.rectangle(patch_box, fill=(255, 255, 255, 255))
+        
+    for col in best_columns:
+        curr_y = start_y
+        for char in col:
+            # Basic vertical punctuation handling
+            offset_x, offset_y = 0, 0
+            if char in ['。', '、', '.']:
+                offset_x, offset_y = best_font_size * 0.6, -best_font_size * 0.6
+            elif char in ['「', '」', '（', '）', '(', ')']:
+                # Simplistic rotation/shift for brackets - in a real app you'd rotate the glyph
+                pass 
+                
+            char_x = start_x + offset_x
+            char_y = curr_y + offset_y
+            
+            # Text stroke
+            draw.text(
+                (char_x, char_y),
+                char,
+                font=font,
+                fill=(255, 255, 255, 255),
+                stroke_width=stroke_w,
+                stroke_fill=(255, 255, 255, 255)
+            )
+            # Text body
+            draw.text(
+                (char_x, char_y),
+                char,
+                font=font,
+                fill=(0, 0, 0, 255)
+            )
+            
+            # "ー" (chouonpu) needs to be drawn vertically (rotated)
+            # PIL text drawing doesn't easily rotate single characters inline without creating a new image
+            # A simple hack for vertical chouonpu is drawing a line or a pipe '|' if not supported natively.
+            
+            curr_y += best_font_size
+        start_x -= best_font_size
+
+
+def tulis_teks_di_balon(draw, text, x1, y1, x2, y2, background_patch=False, target_language=None):
+    """
+    Auto-fits translated text into speech bubbles.
+    Wraps words neatly, allows hyphen splits, and maximizes font size.
+    Automatically uses a Unicode fallback font for non-Latin scripts~ ♪
+    """
+    text = str(text).strip()
 
     box_width = max(1, x2 - x1)
     box_height = max(1, y2 - y1)
-
     setting = pilih_setting_teks(box_width, box_height, text)
+    
+    lang_key = target_language.lower() if target_language else ""
+    if lang_key == "jepang":
+        lang_key = "japanese"
+
+    # Japanese vertical routing
+    if lang_key == "japanese":
+        tulis_teks_jepang_vertikal(draw, text, _get_font_for_text, x1, y1, x2, y2, setting, background_patch)
+        return
+
+    # Only uppercase for Latin scripts (Korean/CJK/Arabic don't have uppercase)
+    if not _has_non_latin(text):
+        text = text.upper()
 
     max_w = box_width * setting["skala_w"]
     max_h = box_height * setting["skala_h"]
@@ -250,10 +564,7 @@ def tulis_teks_di_balon(draw, text, x1, y1, x2, y2, background_patch=False):
     # Looking for the largest font size that fits~
     # Selecting the layout that fills the bubble most beautifully ♪
     for f_size in range(max_font_size, min_font_size - 1, -1):
-        try:
-            font = ImageFont.truetype(FONT_MANGA, f_size)
-        except OSError:
-            font = ImageFont.load_default()
+        font = _get_font_for_text(text, f_size, target_language)
 
         spacing = max(1, int(f_size * setting["spacing_ratio"]))
         wrapped_text = bungkus_teks_per_kata(draw, text, font, max_w)
@@ -279,10 +590,7 @@ def tulis_teks_di_balon(draw, text, x1, y1, x2, y2, background_patch=False):
     # Don't shrink font size too much for big bubbles with short text~
     best_font_size = max(min_font_size, int(best_font_size * setting["font_scale"]))
 
-    try:
-        font = ImageFont.truetype(FONT_MANGA, best_font_size)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _get_font_for_text(text, best_font_size, target_language)
 
     best_spacing = max(1, int(best_font_size * setting["spacing_ratio"]))
 

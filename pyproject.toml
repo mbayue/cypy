@@ -15,7 +15,8 @@ dependencies = [
     "Pillow",
     "ultralytics",
     "google-genai",
-    "python-dotenv"
+    "python-dotenv",
+    "requests"
 ]
 
 [project.scripts]

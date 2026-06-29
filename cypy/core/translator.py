@@ -4,32 +4,29 @@ import time
 import json
 import fitz
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from google import genai
 from ultralytics import YOLO
 
 from cypy.core.config import (
-    GEMINI_API_KEY, MODEL_GEMINI, MODEL_YOLO, FONT_MANGA, ROOT_DIR,
+    MODEL_YOLO, FONT_MANGA, ROOT_DIR, LANG_CODES,
     MAX_TINGGI_MOSAIK, PAD_X_RATIO, PAD_Y_RATIO, MIN_PAD, SKALA_POTONGAN_MOSAIK,
     MARGIN_KIRI_NOMOR, MARGIN_KANAN, JARAK_ANTAR_POTONGAN, LEBAR_MOSAIK_MIN,
     PAKAI_PATCH_UNTUK_BOX_GEPENG, RASIO_BOX_GEPENG, LEBAR_BOX_GEPENG_RATIO, TINGGI_BOX_GEPENG_RATIO,
-    MANUAL_TRANSLATION_OVERRIDE
+    MANUAL_TRANSLATION_OVERRIDE, SUPPORTED_IMAGE_EXTENSIONS
 )
 from cypy.core.utils import (
-    panggil_gemini_dengan_config, bersihkan_json_dari_gemini,
+    bersihkan_json_dari_gemini,
     gabung_kotak_tumpang_tindih, buang_kotak_ngawur, buang_kotak_sfx_dan_gambar,
     buat_crop_lega_tapi_tidak_nyamber, mask_luar_box_utama, tulis_teks_di_balon
 )
 
 
-def terjemahkan_mosaik(gambar_mosaik_pil, target_language="Indonesian", max_retry=3):
-    """Sends a single mosaic image to Gemini ♪"""
+def terjemahkan_mosaik(gambar_mosaik_pil, provider, target_language="Indonesian", max_retry=3):
+    """Sends a single mosaic image to the LLM provider for translation~ ♪"""
     for percobaan in range(max_retry):
         try:
-            if not GEMINI_API_KEY:
-                print("\n[!] GEMINI_API_KEY not found in .env")
+            if not provider.validate_api_key():
+                print(f"\n[!] API key for {provider.provider_name} is missing or empty!")
                 return {}
-
-            client = genai.Client(api_key=GEMINI_API_KEY)
 
             examples = {
                 "english": ("Hello!", "Mother... wait..."),
@@ -73,30 +70,30 @@ def terjemahkan_mosaik(gambar_mosaik_pil, target_language="Indonesian", max_retr
                 f'Example output: {{"1": "{example_val_1}", "2": "SKIP", "3": "{example_val_3}"}}'
             )
 
-            response = panggil_gemini_dengan_config(client, gambar_mosaik_pil, prompt)
+            response_text = provider.translate_image(gambar_mosaik_pil, prompt)
 
-            teks_json = bersihkan_json_dari_gemini(response.text)
+            teks_json = bersihkan_json_dari_gemini(response_text)
             hasil = json.loads(teks_json)
 
             return hasil
 
         except ValueError as ve:
             if str(ve) == "API_KEY_ERROR":
-                print("\n[!] API key is expired or invalid. Please renew your GEMINI_API_KEY in .env")
+                print(f"\n[!] API key for {provider.provider_name} is expired or invalid.")
                 return {}
             raise ve
         except Exception as e:
             err_str = str(e).lower()
             if "api key expired" in err_str or "api_key_invalid" in err_str or "api key" in err_str or "api_key" in err_str:
-                print("\n[!] API key is expired or invalid. Please renew your GEMINI_API_KEY in .env")
+                print(f"\n[!] API key for {provider.provider_name} is expired or invalid.")
                 return {}
 
-            print(f"\n[!] Gemini error (Attempt {percobaan + 1}/{max_retry})~")
+            print(f"\n[!] {provider.provider_name} error (Attempt {percobaan + 1}/{max_retry})~")
 
             if percobaan < max_retry - 1:
                 time.sleep(10)
             else:
-                print("  [!] Failed to connect to Gemini.")
+                print(f"  [!] Failed to connect to {provider.provider_name}.")
                 return {}
 
 
@@ -140,18 +137,11 @@ def perkecil_daftar_potongan_jika_mosaik_terlalu_tinggi(
     return daftar_baru
 
 
-def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
+def proses_satu_gambar(image_path, yolo_model, provider, target_language="Indonesian"):
     """Processes a single manga page~ ♪"""
     print(f"\nTranslating: {os.path.basename(image_path)}")
 
-    lang_codes = {
-        "english": "en",
-        "indonesian": "id",
-        "spanish": "es",
-        "portuguese": "pt",
-        "javanese": "jv"
-    }
-    lang_code = lang_codes.get(target_language.lower(), "tr")
+    lang_code = LANG_CODES.get(target_language.lower(), target_language[:2].lower() if target_language else "tr")
     suffix = f"_cypytr_{lang_code}"
 
     img = cv2.imread(image_path)
@@ -291,7 +281,7 @@ def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
 
     try:
         font_nomor = ImageFont.truetype(FONT_MANGA, 40)
-    except:
+    except Exception:
         pass
 
     for nomor, pot in daftar_potongan:
@@ -316,9 +306,9 @@ def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
 
     kanvas_mosaik.save(mosaik_path)
 
-    print("  Translating text...")
+    print(f"  Translating with {provider.provider_name} ({provider.model_name})...")
 
-    hasil_terjemahan = terjemahkan_mosaik(kanvas_mosaik, target_language=target_language)
+    hasil_terjemahan = terjemahkan_mosaik(kanvas_mosaik, provider=provider, target_language=target_language)
 
     if not hasil_terjemahan:
         print("  [!] Translation failed.")
@@ -357,7 +347,8 @@ def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
                         y1,
                         x2,
                         y2,
-                        background_patch=True
+                        background_patch=True,
+                        target_language=target_language
                     )
 
                 else:
@@ -393,10 +384,9 @@ def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
                         y1,
                         x2,
                         y2,
-                        background_patch=False
+                        background_patch=False,
+                        target_language=target_language
                     )
-
-    time.sleep(3)
 
     output_path = image_path.rsplit(".", 1)[0] + f"{suffix}.png"
 
@@ -405,18 +395,44 @@ def proses_satu_gambar(image_path, yolo_model, target_language="Indonesian"):
     return output_path
 
 
-def mulai_ritual_pdf(pdf_path, yolo_model, target_language="Indonesian"):
+def proses_folder(folder_path, yolo_model, provider, target_language="Indonesian"):
+    """Processes all supported images in a folder~ ♪"""
+    supported = SUPPORTED_IMAGE_EXTENSIONS
+    files = sorted([
+        f for f in os.listdir(folder_path)
+        if f.lower().endswith(supported)
+    ])
+
+    if not files:
+        print(f"  [!] No supported image files found in: {folder_path}")
+        return
+
+    total = len(files)
+    print(f"\n[Batch] Found {total} images in folder.")
+
+    sukses = 0
+    gagal = 0
+
+    for idx, filename in enumerate(files, start=1):
+        file_path = os.path.join(folder_path, filename)
+        print(f"\n[{idx}/{total}] ", end="")
+
+        hasil = proses_satu_gambar(file_path, yolo_model, provider=provider, target_language=target_language)
+
+        if hasil:
+            print(f"  Done! Saved at: {hasil}")
+            sukses += 1
+        else:
+            gagal += 1
+
+    print(f"\n[Batch] Completed! Success: {sukses}, Failed: {gagal}, Total: {total}")
+
+
+def mulai_ritual_pdf(pdf_path, yolo_model, provider, target_language="Indonesian"):
     """Processes a PDF page-by-page, and binds them back together~ ♪"""
     print(f"\nProcessing PDF: {os.path.basename(pdf_path)}")
 
-    lang_codes = {
-        "english": "en",
-        "indonesian": "id",
-        "spanish": "es",
-        "portuguese": "pt",
-        "javanese": "jv"
-    }
-    lang_code = lang_codes.get(target_language.lower(), "tr")
+    lang_code = LANG_CODES.get(target_language.lower(), "tr")
     suffix = f"_cypytr_{lang_code}"
 
     doc = fitz.open(pdf_path)
@@ -425,9 +441,10 @@ def mulai_ritual_pdf(pdf_path, yolo_model, target_language="Indonesian"):
     os.makedirs(temp_dir, exist_ok=True)
 
     translated_images_paths = []
+    total_pages = len(doc)
 
-    for page_num in range(len(doc)):
-        print(f"Page {page_num + 1}/{len(doc)}...")
+    for page_num in range(total_pages):
+        print(f"\n[{page_num + 1}/{total_pages}] Page {page_num + 1}...")
 
         page = doc.load_page(page_num)
 
@@ -438,7 +455,7 @@ def mulai_ritual_pdf(pdf_path, yolo_model, target_language="Indonesian"):
 
         pix.save(img_path)
 
-        hasil_path = proses_satu_gambar(img_path, yolo_model, target_language=target_language)
+        hasil_path = proses_satu_gambar(img_path, yolo_model, provider=provider, target_language=target_language)
 
         if hasil_path:
             translated_images_paths.append(hasil_path)

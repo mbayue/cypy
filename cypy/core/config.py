@@ -16,12 +16,60 @@ else:
 
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
+
+# ==========================================
+# ✦ LLM PROVIDER SETTINGS - Choose your translation engine~ ♪ ✦
+# ==========================================
+# Supported providers: gemini, openrouter, openai
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+
+# Google Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL_GEMINI = os.getenv("MODEL_GEMINI", "gemini-3.1-flash-lite-preview")
+MODEL_GEMINI = os.getenv("MODEL_GEMINI", "gemini-2.0-flash")
+
+# OpenRouter (https://openrouter.ai)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+MODEL_OPENROUTER = os.getenv("MODEL_OPENROUTER", "google/gemini-2.0-flash-exp:free")
+
+# OpenAI (https://platform.openai.com)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MODEL_OPENAI = os.getenv("MODEL_OPENAI", "gpt-4o-mini")
+
 
 # ✦ Assets Path - YOLO model and font files go here~ ✦
 MODEL_YOLO = os.path.join(ASSETS_DIR, "eyecyre.pt")
 FONT_MANGA = os.path.join(ASSETS_DIR, "Komika Axis.ttf")
+
+
+# ==========================================
+# ✦ LANGUAGE SETTINGS - Supported target languages~ ♪ ✦
+# ==========================================
+LANG_CODES = {
+    "english": "en",
+    "indonesian": "id",
+    "spanish": "es",
+    "portuguese": "pt",
+    "javanese": "jv",
+    "japanese": "jp",
+    "jepang": "jp",
+    "korean": "kr",
+    "korea": "kr",
+    "chinese": "cn",
+    "chinese (simplified)": "cn",
+    "chinese (traditional)": "tw",
+    "mandarin": "cn",
+    "thai": "th",
+    "vietnamese": "vi",
+    "russian": "ru",
+    "arabic": "ar",
+    "hindi": "hi",
+    "malay": "ms",
+    "tagalog": "tl"
+}
+
+# Supported image file extensions
+SUPPORTED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+
 
 # ==========================================
 # ✦ MOSAIC & CROP SETTINGS - Arranging page panels beautifully~ ✦
@@ -76,3 +124,23 @@ TINGGI_BOX_GEPENG_RATIO = 0.22
 # ✦ MANUAL TRANSLATION OVERRIDE - For correcting specific bubble IDs manually ♪ ✦
 # ==========================================
 MANUAL_TRANSLATION_OVERRIDE = {}
+
+
+# ==========================================
+# ✦ PROVIDER HELPERS - Utility functions for provider management~ ♪ ✦
+# ==========================================
+def get_provider_config(provider_name=None):
+    """
+    Returns (api_key, model_name) for the given provider.
+    Defaults to the currently configured LLM_PROVIDER.
+    """
+    provider = (provider_name or LLM_PROVIDER).lower()
+
+    if provider == "gemini":
+        return GEMINI_API_KEY, MODEL_GEMINI
+    elif provider == "openrouter":
+        return OPENROUTER_API_KEY, MODEL_OPENROUTER
+    elif provider == "openai":
+        return OPENAI_API_KEY, MODEL_OPENAI
+    else:
+        return "", ""
