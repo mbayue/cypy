@@ -3,7 +3,8 @@ import time
 from ultralytics import YOLO
 from cypy.core.config import (
     MODEL_YOLO, FONT_MANGA, LANG_CODES, SUPPORTED_IMAGE_EXTENSIONS,
-    LLM_PROVIDER, CUSTOM_BASE_URL, get_provider_config
+    LLM_PROVIDER, CUSTOM_BASE_URL, ROOT_DIR, TARGET_LANGUAGE,
+    get_provider_config
 )
 from cypy.core.translator import proses_satu_gambar, mulai_ritual_pdf, proses_folder
 from cypy.core.providers import create_provider
@@ -175,6 +176,17 @@ def _save_to_env_simple(env_path, key, value):
         f.writelines(new_lines)
 
 
+def _env_has_key(env_path, key):
+    """Check if a key exists in the .env file."""
+    if not os.path.exists(env_path):
+        return False
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip().startswith(f"{key}="):
+                return True
+    return False
+
+
 def setup_provider(provider_name=None):
     """Sets up the LLM provider, requesting API key if missing~ ♪"""
     import cypy.core.config as config
@@ -309,8 +321,16 @@ def main():
     print(f"CYPY v{__version__} - Manga Translator")
     print("Ready to translate~ (◠‿●) ~♪")
 
-    # Always let user choose provider
-    provider_name = pilih_provider()
+    env_path = os.path.join(ROOT_DIR, ".env")
+    has_provider = _env_has_key(env_path, "LLM_PROVIDER")
+    has_language = _env_has_key(env_path, "TARGET_LANGUAGE")
+
+    if has_provider:
+        provider_name = LLM_PROVIDER
+    else:
+        provider_name = pilih_provider()
+        _save_to_env_simple(env_path, "LLM_PROVIDER", provider_name)
+
     provider = setup_provider(provider_name)
 
     if not os.path.exists(MODEL_YOLO):
@@ -322,7 +342,11 @@ def main():
 
     yolo_model = YOLO(MODEL_YOLO)
 
-    target_language = pilih_bahasa()
+    if has_language:
+        target_language = TARGET_LANGUAGE or "Indonesian"
+    else:
+        target_language = pilih_bahasa()
+        _save_to_env_simple(env_path, "TARGET_LANGUAGE", target_language)
 
     # Show current config
     tampilkan_status(provider, target_language)

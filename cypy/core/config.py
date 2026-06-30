@@ -44,6 +44,9 @@ CUSTOM_API_KEY = os.getenv("CUSTOM_API_KEY", "")
 CUSTOM_BASE_URL = os.getenv("CUSTOM_BASE_URL", "")
 MODEL_CUSTOM = os.getenv("MODEL_CUSTOM", "gpt-5.4-mini")
 
+# Target language (saved after first run)
+TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "")
+
 
 # ✦ Assets Path - YOLO model and font files go here~ ✦
 MODEL_YOLO = os.path.join(ASSETS_DIR, "eyecyre.pt")
